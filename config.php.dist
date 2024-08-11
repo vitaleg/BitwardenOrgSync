@@ -1,0 +1,37 @@
+<?php
+$config = [];
+
+$config['BWCLI'] = __DIR__ . '/bw';
+
+$config['REDIS']['ADDRESS'] = '127.0.0.1';
+$config['REDIS']['PORT'] = 6379;
+$config['REDIS']['USERNAME'] = false;
+$config['REDIS']['PASSWORD'] = false;
+$config['REDIS']['DATABASE_ID'] = 0;
+
+$config['BW_LOCAL']['URL'] = 'https://firstbwserver.lan'; //First Bitwarden Server URL
+$config['BW_LOCAL']['CLIENT_ID'] = ''; //API Client API
+$config['BW_LOCAL']['CLIENT_SECRET'] = ''; //API Secret
+$config['BW_LOCAL']['ORGANIZATION_ID'] = ''; //ID of the organization whose passwords will be synchronized
+$config['BW_LOCAL']['MASTER_PASSWORD'] = ''; //User Master Password
+$config['BW_LOCAL']['APPDATA_DIR'] = __DIR__ . '/.bwlocal';
+$config['BW_LOCAL']['NODE_EXTRA_CA_CERTS'] = ''; //In case you use your own certificate
+$config['BW_LOCAL']['SERVE_PORT'] = '8081';
+
+$config['BW_REMOTE']['URL'] = 'https://secoundbwserver.lan';
+$config['BW_REMOTE']['CLIENT_ID'] = ''; //API Client API
+$config['BW_REMOTE']['CLIENT_SECRET'] = ''; //API Secret
+$config['BW_REMOTE']['ORGANIZATION_ID'] = ''; //ID of the organization whose passwords will be synchronized
+$config['BW_REMOTE']['MASTER_PASSWORD'] = ''; //User Master Password
+$config['BW_REMOTE']['APPDATA_DIR'] = __DIR__ . '/.bwremote';
+$config['BW_REMOTE']['NODE_EXTRA_CA_CERTS'] = ''; //In case you use your own certificate
+$config['BW_REMOTE']['SERVE_PORT'] = '8082';
+
+//Global
+$config['SYNC_INTERVAL'] = 300; //5 min
+$config['API_SERVER_WAIT_TIMEOUT'] = 600; //10 min
+
+//Notifications
+$config['NOTIFICAION'] = [];
+//$config['NOTIFICAION']['TELEGRAM']['BOT_TOKEN'] = '';
+//$config['NOTIFICAION']['TELEGRAM']['CHAT_ID'] = '';

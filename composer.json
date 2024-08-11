@@ -1,0 +1,5 @@
+{
+    "require": {
+        "mikehaertl/php-shellcommand": "^1.7"
+    }
+}

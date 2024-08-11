@@ -1,0 +1,7 @@
+/.bwlocal/
+/.bwremote/
+/vendor/
+/bw
+*.crt
+*.lock
+/config.php
