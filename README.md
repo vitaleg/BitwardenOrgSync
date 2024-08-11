@@ -23,7 +23,7 @@ The redis database stores references to UUID items on both servers (since it is 
 
 The only way to delete an item on both servers is to add "[DELETE]" to the name. Classic item deletion will not produce any result. This is to avoid loss of important data during the user process, especially at the early stage of tool development.
 
-***Recommendations for creating a user for the API***
+***Recommendations for creating API user***
 
 It is recommended to create a separate user to work with the API. The minimum user role in the organization is "Manager", the option "Garant access to all current and future collections" should be checked.
 
