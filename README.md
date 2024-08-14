@@ -10,6 +10,7 @@ Tool for synchronizing organization passwords between Bitwarden/Vaultwarden serv
  - Redis
  - PHP 8.0+ (recommended 8.3.6+)
  - PHP Extension: redis
+ - PHP Extension: sockets
  - PHP Extension: pcntl
  - PHP Library: [php-shellcommand](https://github.com/mikehaertl/php-shellcommand)
 
