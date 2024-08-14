@@ -4,6 +4,7 @@ namespace BitwardenOrgSync;
 class ApiClient {
 
     private $url;
+    private $http;
 
     public function __construct(string $url) {
         $this->url = $url;
