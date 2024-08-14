@@ -9,9 +9,9 @@ class BWSync {
         'OPENSSL_CONF' => '/dev/null'
     ];
 
+    private $redis;
     private $config;
     private $pids = [];
-
     public $notification;
 
     public function __construct(array $config) {
