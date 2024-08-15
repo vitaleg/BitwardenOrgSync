@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  app:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: BitwardenOrgSync
+    restart: always
+    command: php /var/www/BitwardenOrgSync/run.php
+    volumes:
+      - bwlocal:/bwlocal
+      - bwremote:/bwremote
+      - ./config.php:/var/www/BitwardenOrgSync/config.php:ro
+#      - ./origin_ca_rsa_root.pem:/var/www/BitwardenOrgSync/origin_ca_rsa_root.pem:ro
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:latest
+    container_name: redis-server
+    restart: always
+    volumes:
+      - ./redis_data:/data
+
+volumes:
+    bwlocal:
+    bwremote:
