@@ -2,8 +2,6 @@
 
 Tool for synchronizing organization passwords between Bitwarden/Vaultwarden servers
 
-**Warning!** Very raw code. Use only at your own risk
-
 ## Requirements:
 
  - [Bitwarden CLI Tool](https://bitwarden.com/help/cli/) (2024.6.0 or newer)
