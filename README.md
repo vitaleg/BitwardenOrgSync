@@ -26,4 +26,5 @@ The only way to delete an item on both servers is to add "[DELETE]" to the name.
 
 It is recommended to create a separate user to work with the API. The minimum user role in the organization is "Manager", the option "Garant access to all current and future collections" should be checked.
 
- 
+--
+Host this application on [SERVERio](https://serverio.io/vps_docker)
