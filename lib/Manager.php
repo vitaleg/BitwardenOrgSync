@@ -103,7 +103,7 @@ class BWSync {
     }
 
     private function unlock(string $server) {
-        $unlock = new Command('MASTER_PASSWORD=' . $this->config[$server]['MASTER_PASSWORD']. ' ' . $this->cli($server));
+       $unlock = new Command('MASTER_PASSWORD=\'' . $this->config[$server]['MASTER_PASSWORD']. '\' ' . $this->cli($server));
         $unlock->addArg('unlock')->addArg('--passwordenv', 'MASTER_PASSWORD')->addArg('--raw')->execute();
 
         if ($unlock->getExitCode() === 0) {
