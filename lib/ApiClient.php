@@ -3,21 +3,44 @@ namespace BitwardenOrgSync;
 
 class ApiClient {
 
+    private const STATUS_TIMEOUT = 10;
+
     private $url;
     private $name;
+    private $timeout;
     private $http;
+    private $errors = 0;
+    private $lastError = '';
+    private $quietDetails = '';
+    private $quietTime = 0;
 
-    public function __construct(string $url, string $name = '') {
+    public function __construct(string $url, string $name = '', int $timeout = 120) {
         $this->url = $url;
         $this->name = strlen($name) ? $name : $url;
+        $this->timeout = $timeout;
         $this->http = new HttpClient;
+        $this->http->setConnectTimeout(5);
     }
 
-    private function call(string $path, array $postfields = [], string $method = 'GET', bool $quietConnectErrors = false) {
+    public function getErrorCount() {
+        return $this->errors;
+    }
+
+    public function getLastError() {
+        return $this->lastError;
+    }
+
+    public function resetErrors() {
+        $this->errors = 0;
+        $this->lastError = '';
+    }
+
+    private function call(string $path, array $postfields = [], string $method = 'GET', array $options = []) {
         $query = $this->http->setUrl($this->url . $path);
+        $query->setTimeout($options['timeout'] ?? $this->timeout);
         $query->setCustomMethod($method);
         $query->setHeaders(['Content-Type: application/json']);
-        if (count($postfields)) {
+        if (count($postfields) || $method == 'POST' || $method == 'PUT') {
             $query->setPost(true)->setPostFields($postfields, true);
         }
         //$query->setVerbose(true);
@@ -32,9 +55,23 @@ class ApiClient {
             }
             return $data;
         }
-        if ($code > 0 || !$quietConnectErrors) {
-            $this->logError($method, $path, "HTTP $code" . $this->errorDetails($data, $query->getError()));
+        $details = "HTTP $code" . $this->errorDetails($data, $query->getError());
+        if (empty($options['quiet'])) {
+            $this->logError($method, $path, $details);
+        } elseif ($code > 0 && !$this->isRepeated($details)) {
+            //a probe that is repeated every second while the server starts: log it when it appears and then every 30 seconds
+            $this->logError($method, $path, $details);
         }
+        return false;
+    }
+
+    private function isRepeated(string $details) {
+        $now = time();
+        if ($details === $this->quietDetails && $now - $this->quietTime < 30) {
+            return true;
+        }
+        $this->quietDetails = $details;
+        $this->quietTime = $now;
         return false;
     }
 
@@ -49,7 +86,9 @@ class ApiClient {
     }
 
     private function logError(string $method, string $path, string $details) {
-        echo "[{$this->name}] $method $path failed: $details\n";
+        $this->errors++;
+        $this->lastError = "[{$this->name}] $method $path failed: $details";
+        Logger::error($this->lastError);
     }
 
     private function onlyOrganization(array $objects, string $organizationId) {
@@ -57,7 +96,7 @@ class ApiClient {
             return isset($object['organizationId']) && $object['organizationId'] === $organizationId;
         }));
         if (count($filtered) != count($objects)) {
-            echo "[{$this->name}] Ignored " . (count($objects) - count($filtered)) . " object(s) not belonging to organization $organizationId\n";
+            Logger::warning("[{$this->name}] Ignored " . (count($objects) - count($filtered)) . " object(s) not belonging to organization $organizationId");
         }
         return $filtered;
     }
@@ -81,7 +120,7 @@ class ApiClient {
         if (isset($query['success']) && $query['success']) {
             $collections = $this->onlyOrganization($query['data']['data'] ?? [], $organizationId);
             if (!count($collections)) {
-                echo "[{$this->name}] Warning: no collections found in organization $organizationId, check ORGANIZATION_ID\n";
+                Logger::warning("[{$this->name}] No collections found in organization $organizationId, check ORGANIZATION_ID");
             }
             return $collections;
         }
@@ -143,11 +182,20 @@ class ApiClient {
     }
 
     public function sync() {
-        return $this->call('/sync', [], 'POST');
+        $query = $this->call('/sync', [], 'POST');
+        return isset($query['success']) && $query['success'];
     }
 
     public function status() {
-        return $this->call('/status', [], 'GET', true);
+        return $this->call('/status', [], 'GET', ['quiet' => true, 'timeout' => self::STATUS_TIMEOUT]);
+    }
+
+    public function vaultStatus() {
+        $query = $this->status();
+        if (isset($query['data']['template']['status']) && is_string($query['data']['template']['status'])) {
+            return $query['data']['template']['status'];
+        }
+        return false;
     }
 
 }

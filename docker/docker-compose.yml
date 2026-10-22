@@ -20,6 +20,8 @@ services:
     image: redis:latest
     container_name: redis-server
     restart: always
+    # the references between the servers must survive a crash: snapshot every minute if anything changed
+    command: redis-server --save 60 1
     volumes:
       - ./redis_data:/data
 

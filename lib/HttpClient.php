@@ -9,6 +9,7 @@ class HttpClient {
     private $headers = [];
     private $returntransfer = true;
     private $timeout = 10;
+    private $connecttimeout = 10;
     private $verifyhost = true;
     private $verifypeer = true;
     private $followlocation = true;
@@ -32,7 +33,7 @@ class HttpClient {
     public function setPostFields(array $value, $json = false) {
         $this->postfields = $value;
         if ($json) {
-            $this->postfields = json_encode($value);
+            $this->postfields = json_encode(count($value) ? $value : new \stdClass);
         }
         return $this;
     }
@@ -49,6 +50,11 @@ class HttpClient {
 
     public function setTimeout(int $value) {
         $this->timeout = $value;
+        return $this;
+    }
+
+    public function setConnectTimeout(int $value) {
+        $this->connecttimeout = $value;
         return $this;
     }
 
@@ -84,6 +90,10 @@ class HttpClient {
 
     public function exec() {
         $this->result = $this->call();
+        //the client is reused: the next request must not inherit the body and method of this one
+        $this->post = false;
+        $this->postfields = [];
+        $this->custommethod = false;
         return $this;
     }
 
@@ -114,6 +124,7 @@ class HttpClient {
         curl_setopt($ch, CURLOPT_HTTPHEADER, $this->headers);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, $this->returntransfer);
         curl_setopt($ch, CURLOPT_TIMEOUT, $this->timeout);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, $this->connecttimeout);
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, $this->verifyhost ? 2 : 0);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, $this->verifypeer);
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, $this->followlocation);
