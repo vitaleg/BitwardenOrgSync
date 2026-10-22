@@ -16,19 +16,25 @@ if ($config['REDIS']['USERNAME']) {
     $redis->auth($config['REDIS']['PASSWORD']);
 }
 if ($config['REDIS']['DATABASE_ID'] > 0) {
-    $redis->swapdb($config['REDIS']['DATABASE_ID']);
+    $redis->select($config['REDIS']['DATABASE_ID']);
 }
 $redis->setOption(\Redis::OPT_SERIALIZER, \Redis::SERIALIZER_PHP);
 
 //Init API Servers
 $bwmanager = new \BitwardenOrgSync\BWSync($config);
 
+foreach (['BW_LOCAL', 'BW_REMOTE'] as $server) {
+    if (empty($config[$server]['ORGANIZATION_ID'])) {
+        $bwmanager->exit("Error: $server ORGANIZATION_ID is not set.");
+    }
+}
+
 $bwmanager->serveBackground('BW_LOCAL');
 $bwmanager->serveBackground('BW_REMOTE');
 
 //Init API Clients
-$local = new \BitwardenOrgSync\ApiClient('http://[::1]:' . $config['BW_LOCAL']['SERVE_PORT']);
-$remote = new \BitwardenOrgSync\ApiClient('http://[::1]:' . $config['BW_REMOTE']['SERVE_PORT']);
+$local = new \BitwardenOrgSync\ApiClient('http://[::1]:' . $config['BW_LOCAL']['SERVE_PORT'], 'BW_LOCAL');
+$remote = new \BitwardenOrgSync\ApiClient('http://[::1]:' . $config['BW_REMOTE']['SERVE_PORT'], 'BW_REMOTE');
 
 
 while (true) {
@@ -40,6 +46,9 @@ while (true) {
             $bwmanager->exit("Error: The process with PID $pid is stopped.");
         } elseif ($pid == 0) {
             echo "No completed stopped...\n";
+            break;
+        } else {
+            echo "Warning: pcntl_waitpid() failed, API server processes are not monitored.\n";
             break;
         }
     }
@@ -72,7 +81,7 @@ while (true) {
 
     //Sync Collections
     echo "Sync Collections...\n";
-    foreach ($local->getOrgItems() as $lc) {
+    foreach ($local->getOrgItems($config['BW_LOCAL']['ORGANIZATION_ID']) ?: [] as $lc) {
         if (!$redis->get($lc['id'])) {
             if ($rcc = $remote->createOrgCollection($config['BW_REMOTE']['ORGANIZATION_ID'], $lc['name'])) {
                 $redis->set($lc['id'], $rcc['id']);
@@ -81,7 +90,7 @@ while (true) {
         }
     }
 
-    foreach ($remote->getOrgItems() as $rc) {
+    foreach ($remote->getOrgItems($config['BW_REMOTE']['ORGANIZATION_ID']) ?: [] as $rc) {
         if (!$redis->get($rc['id'])) {
             if ($lcc = $local->createOrgCollection($config['BW_LOCAL']['ORGANIZATION_ID'], $rc['name'])) {
                 $redis->set($rc['id'], $lcc['id']);
@@ -93,9 +102,15 @@ while (true) {
 
     //Sync Items
     echo "Sync Items...\n";
-    foreach ($local->getItems() as $litem) {
+    $localSkipped = [];
+    foreach ($local->getItems($config['BW_LOCAL']['ORGANIZATION_ID']) ?: [] as $litem) {
 
         if (!strlen($litem['name'])) {
+            continue;
+        }
+
+        if (!Helper::isSyncable($litem)) {
+            Helper::countSkipped($localSkipped, $litem);
             continue;
         }
 
@@ -114,7 +129,8 @@ while (true) {
                 $litem['type'],
                 $litem['login'],
                 $litem['notes'],
-                $fields
+                $fields,
+                $litem['reprompt'] ?? 0
             );
             if ($remoteItemCreate) {
                 $redis->set($litem['id'], ['linked_uuid' => $remoteItemCreate['id'], 'revisionDate' => $litem['revisionDate']]);
@@ -153,7 +169,8 @@ while (true) {
                 $litem['type'],
                 $litem['login'],
                 $litem['notes'],
-                $fields
+                $fields,
+                $litem['reprompt'] ?? 0
             );
 
             if ($remoteItemUpdate) {
@@ -164,9 +181,17 @@ while (true) {
 
     }
 
-    foreach ($remote->getItems() as $ritem) {
+    Helper::reportSkipped('BW_LOCAL', $localSkipped);
+
+    $remoteSkipped = [];
+    foreach ($remote->getItems($config['BW_REMOTE']['ORGANIZATION_ID']) ?: [] as $ritem) {
 
         if (!strlen($ritem['name'])) {
+            continue;
+        }
+
+        if (!Helper::isSyncable($ritem)) {
+            Helper::countSkipped($remoteSkipped, $ritem);
             continue;
         }
 
@@ -186,7 +211,8 @@ while (true) {
                 $ritem['type'],
                 $ritem['login'],
                 $ritem['notes'],
-                $fields
+                $fields,
+                $ritem['reprompt'] ?? 0
             );
             if ($localItemCreate) {
                 $redis->set($ritem['id'], ['linked_uuid' => $localItemCreate['id'], 'revisionDate' => $ritem['revisionDate']]);
@@ -227,7 +253,8 @@ while (true) {
                 $ritem['type'],
                 $ritem['login'],
                 $ritem['notes'],
-                $fields
+                $fields,
+                $ritem['reprompt'] ?? 0
             );
 
             if ($localItemUpdate) {
@@ -237,6 +264,8 @@ while (true) {
         }
 
     }
+
+    Helper::reportSkipped('BW_REMOTE', $remoteSkipped);
 
     echo 'Sleep for ' . $config['SYNC_INTERVAL'] . " sec.\n";
     sleep($config['SYNC_INTERVAL']);

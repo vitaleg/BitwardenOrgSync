@@ -22,6 +22,10 @@ The redis database stores references to UUID items on both servers (since it is 
 
 The only way to delete an item on both servers is to add "[DELETE]" to the name. Classic item deletion will not produce any result. This is to avoid loss of important data during the user process, especially at the early stage of tool development.
 
+***Synchronized items***
+
+Only "Login" items from the organizations set in `ORGANIZATION_ID` are synchronized. Items of other types (Secure Note, Card, Identity, SSH Key), items of the personal vault and items of other organizations are skipped. Skipped items of unsupported types are reported in the log on every synchronization cycle.
+
 ***Recommendations for creating API user***
 
 It is recommended to create a separate user to work with the API. The minimum user role in the organization is "Manager", the option "Garant access to all current and future collections" should be checked.

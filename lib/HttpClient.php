@@ -9,12 +9,13 @@ class HttpClient {
     private $headers = [];
     private $returntransfer = true;
     private $timeout = 10;
-    private $verifyhost = false;
-    private $verifypeer = false;
+    private $verifyhost = true;
+    private $verifypeer = true;
     private $followlocation = true;
     private $custommethod = false;
     private $useCookies;
     private $statusCode;
+    private $error = '';
     private $result;
     private $verbose = false;
 
@@ -90,6 +91,10 @@ class HttpClient {
         return $this->statusCode;
     }
 
+    public function getError() {
+        return $this->error;
+    }
+
     public function jsonToArray() {
         return json_decode($this->result, true);
     }
@@ -109,9 +114,9 @@ class HttpClient {
         curl_setopt($ch, CURLOPT_HTTPHEADER, $this->headers);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, $this->returntransfer);
         curl_setopt($ch, CURLOPT_TIMEOUT, $this->timeout);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, $this->verifyhost);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, $this->verifyhost ? 2 : 0);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, $this->verifypeer);
-        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, $this->followlocation);
         curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         curl_setopt($ch, CURLOPT_VERBOSE, $this->verbose);
 
@@ -127,6 +132,7 @@ class HttpClient {
 
         $exec = curl_exec($ch);
         $this->statusCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $this->error = curl_error($ch);
         return $exec;
     }
 }

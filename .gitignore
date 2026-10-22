@@ -3,5 +3,7 @@
 /vendor/
 /bw
 *.crt
+*.pem
 *.lock
-/config.php
+config.php
+redis_data/

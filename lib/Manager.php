@@ -26,7 +26,7 @@ class BWSync {
             $this->redis->auth($config['REDIS']['PASSWORD']);
         }
         if ($config['REDIS']['DATABASE_ID'] > 0) {
-            $this->redis->swapdb($config['REDIS']['DATABASE_ID']);
+            $this->redis->select($config['REDIS']['DATABASE_ID']);
         }
         $this->redis->setOption(\Redis::OPT_SERIALIZER, \Redis::SERIALIZER_PHP);
 
@@ -63,7 +63,7 @@ class BWSync {
             $this->serve($server);
             $errMsg = "API Server $server just stopped";
             $this->notification->send($errMsg);
-            exit(0);
+            exit(1);
         }
     }
 
@@ -73,8 +73,7 @@ class BWSync {
         }
         $cmd = new Command($this->cli($server));
         $cmd->addArg('serve')
-            ->addArg('--port', $this->config[$server]['SERVE_PORT'])
-            ->addArg('--disable-origin-protection');
+            ->addArg('--port', $this->config[$server]['SERVE_PORT']);
         $cmd->execute();
     }
 
@@ -168,6 +167,7 @@ class BWSync {
 
     public function exit(string $errMsg) {
         $this->notification->send($errMsg);
-        die($errMsg . "\n");
+        fwrite(STDERR, $errMsg . "\n");
+        exit(1);
     }
 }

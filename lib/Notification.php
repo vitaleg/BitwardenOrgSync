@@ -35,6 +35,9 @@ class Notification {
         if ($query->getStatusCode() === 200) {
             return true;
         }
+        $response = $query->jsonToArray();
+        $details = (is_array($response) && isset($response['description']) && is_string($response['description'])) ? $response['description'] : $query->getError();
+        echo 'Notification failed: HTTP ' . $query->getStatusCode() . (strlen($details) ? ': ' . $details : '') . "\n";
         return false;
     }
 
