@@ -11,6 +11,8 @@ class Helper {
         5 => 'SSH Key'
     ];
 
+    private const DELETE_MARKER = '[DELETE]';
+
     private static $reported = [];
 
     public static function redis(array $config) {
@@ -76,9 +78,60 @@ class Helper {
         }
     }
 
+    //An item is deleted on both servers when its name starts or ends with the marker. The marker in the middle of a name is just text.
+    public static function hasDeleteMarker($name) {
+        $name = trim((string) $name);
+        return str_starts_with($name, self::DELETE_MARKER) || str_ends_with($name, self::DELETE_MARKER);
+    }
+
+    //Hash of everything that is copied between the servers: equal hashes mean there is nothing to synchronize
+    public static function fingerprint(array $item) {
+        $login = (isset($item['login']) && is_array($item['login'])) ? $item['login'] : [];
+        $uris = [];
+        foreach (($login['uris'] ?? []) as $uri) {
+            $uris[] = [$uri['match'] ?? null, $uri['uri'] ?? null];
+        }
+        $fields = [];
+        foreach (($item['fields'] ?? []) as $field) {
+            $fields[] = [$field['name'] ?? null, $field['value'] ?? null, $field['type'] ?? null];
+        }
+        return md5(json_encode([
+            $item['type'] ?? null,
+            $item['name'] ?? null,
+            $item['notes'] ?? null,
+            (int) ($item['reprompt'] ?? 0),
+            $login['username'] ?? null,
+            $login['password'] ?? null,
+            $login['totp'] ?? null,
+            $uris,
+            $fields
+        ]));
+    }
+
+    //What identifies "the same" item on the other server when there is no stored link
+    public static function identityKey(array $item) {
+        return ($item['type'] ?? '') . "\n" . ($item['name'] ?? '') . "\n" . ($item['login']['username'] ?? '');
+    }
+
+    public static function isNewer(string $a, string $b) {
+        try {
+            return new \DateTimeImmutable($a) > new \DateTimeImmutable($b);
+        } catch (\Throwable $e) {
+            return strcmp($a, $b) > 0;
+        }
+    }
+
     public static function newStats() {
         $items = ['created' => 0, 'updated' => 0, 'deleted' => 0, 'skipped' => 0, 'failed' => 0];
-        return ['collections' => ['to_remote' => 0, 'to_local' => 0], 'to_remote' => $items, 'to_local' => $items];
+        return [
+            'collections' => ['to_remote' => 0, 'to_local' => 0],
+            'to_remote' => $items,
+            'to_local' => $items,
+            'memberships' => 0,
+            'conflicts' => 0,
+            'errors' => 0,
+            'aborted' => null
+        ];
     }
 
     public static function summary(int $cycle, array $stats, float $seconds, int $errors) {
@@ -91,21 +144,13 @@ class Helper {
             $parts[] = "$label " . implode(', ', $details);
         }
         $parts[] = 'collections created: remote ' . $stats['collections']['to_remote'] . ', local ' . $stats['collections']['to_local'];
+        $parts[] = 'membership changes ' . $stats['memberships'];
+        $parts[] = 'conflicts ' . $stats['conflicts'];
         return "Cycle $cycle finished in " . number_format($seconds, 1) . 's, ' . ($errors ? "$errors error(s)" : 'no errors') . ' | ' . implode(' | ', $parts);
     }
 
     public static function describeException(\Throwable $e) {
         return get_class($e) . ': ' . $e->getMessage() . ' in ' . basename($e->getFile()) . ':' . $e->getLine();
-    }
-
-    public static function describeExit(int $status) {
-        if (pcntl_wifexited($status)) {
-            return 'exit code ' . pcntl_wexitstatus($status);
-        }
-        if (pcntl_wifsignaled($status)) {
-            return 'signal ' . pcntl_wtermsig($status);
-        }
-        return 'unknown status';
     }
 
 }

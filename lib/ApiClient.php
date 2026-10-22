@@ -1,7 +1,7 @@
 <?php
 namespace BitwardenOrgSync;
 
-class ApiClient {
+class ApiClient implements ApiInterface {
 
     private const STATUS_TIMEOUT = 10;
 
@@ -47,6 +47,12 @@ class ApiClient {
         $query->exec();
         $code = $query->getStatusCode();
         $data = $query->jsonToArray();
+        if (!empty($options['ignore']) && is_array($data) && isset($data['success']) && !$data['success']
+            && isset($data['message']) && is_string($data['message']) && preg_match($options['ignore'], $data['message'])) {
+            //an expected answer, e.g. "Not found." when an item that has to be deleted is already gone
+            Logger::debug("[{$this->name}] $method $path: " . $data['message'] . ' (ignored)');
+            return ['success' => true, 'data' => null];
+        }
         if ($code >= 200 && $code < 300) {
             if (!is_array($data)) {
                 $this->logError($method, $path, "HTTP $code, response is not valid JSON");
@@ -165,8 +171,18 @@ class ApiClient {
         return false;
     }
 
+    //Replaces the collections of an item. "bw edit item" does not change them, only "bw edit item-collections" does
+    public function setItemCollections(string $id, string $organizationId, array $collectionIds) {
+        $query = $this->call('/object/item-collections/' . $id . '?organizationId=' . rawurlencode($organizationId), array_values($collectionIds), 'PUT');
+        if (isset($query['success']) && $query['success']) {
+            return $query['data'] ?? true;
+        }
+        return false;
+    }
+
+    //An item that is already gone counts as deleted, so a deletion that was interrupted half way can be repeated
     public function deleteItem(string $id) {
-        $query = $this->call('/object/item/' . $id, [], 'DELETE');
+        $query = $this->call('/object/item/' . $id, [], 'DELETE', ['ignore' => '/not found/i']);
         if (isset($query['success']) && $query['success']) {
             return true;
         }

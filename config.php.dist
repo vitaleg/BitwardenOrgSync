@@ -35,6 +35,10 @@ $config['CLI_TIMEOUT'] = 120; //Timeout of the bw CLI commands (login, unlock, s
 $config['FAIL_ALERT_CYCLES'] = 3; //Send a notification when this number of synchronization cycles in a row failed (0 - disabled)
 $config['LOCKED_EXIT_CYCLES'] = 3; //Stop the script when the vault is locked for this number of cycles in a row, so it can be restarted and log in again (0 - disabled)
 $config['LOG_LEVEL'] = 'info'; //debug, info, warning, error
+$config['CONFLICT_POLICY'] = 'newest'; //An item changed on both servers between two cycles: newest (the newer version wins, the older one is kept as a "conflict copy" item), local, remote, skip (report an error and change nothing)
+$config['SYNC_COLLECTION_MEMBERSHIP'] = true; //Synchronize moving of an item between collections
+$config['FORCE_INITIAL_SYNC'] = false; //Create the counterparts although Redis has no links and both organizations already contain data (see README, usually --rebuild-mapping is what you need)
+//$config['HEALTH_FILE'] = '/tmp/bwsync-health'; //Written after every cycle without errors, read by the docker healthcheck
 
 //Notifications
 $config['NOTIFICAION'] = [];

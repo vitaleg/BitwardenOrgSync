@@ -9,9 +9,10 @@ class BWSync {
         'OPENSSL_CONF' => '/dev/null'
     ];
 
-    private $redis;
     private $config;
-    private $pids = [];
+    private $sessions = [];
+    private $procs = [];
+    private $logs = [];
     private $lastCliError = '';
     private $duration = 0;
     public $notification;
@@ -19,29 +20,7 @@ class BWSync {
     public function __construct(array $config) {
         $this->config = $config;
 
-        $this->redis = Helper::redis($config);
-
         $this->notification = new Notification($config['NOTIFICAION'] ?? []);
-    }
-
-    private function setPid(string $server, int $pid) {
-        $this->pids[$server] = $pid;
-    }
-
-    private function getPid(string $server) {
-        return (isset($this->pids[$server])) ? $this->pids[$server] : false;
-    }
-
-    public function serverByPid(int $pid) {
-        $server = array_search($pid, $this->pids, true);
-        return ($server === false) ? null : $server;
-    }
-
-    public function isProcessRunning(string $server) {
-        if ($pid = $this->getPid($server)) {
-            return file_exists('/proc/'. $pid);
-        }
-        return false;
     }
 
     public function serveBackground(string $server) {
@@ -51,28 +30,72 @@ class BWSync {
             }
         }
         $this->syncCli($server);
-        $pid = pcntl_fork();
-        if ($pid == -1) {
-            $this->exit('Fail to start process ' . $server);
-        } elseif ($pid === 0) {
-            $cmd = $this->serve($server);
-            $errMsg = "API Server $server just stopped: " . $this->describe($cmd);
-            Logger::error($errMsg);
-            $this->notification->send($errMsg);
-            exit(1);
-        }
-        $this->setPid($server, $pid);
+        $this->serve($server);
     }
 
+    //Starts "bw serve" as a child process; its output goes to a file, so nothing piles up in the memory of this process
     public function serve(string $server) {
-        if ($this->isPortActive($this->config[$server]['SERVE_PORT'])) {
-            $this->exit('Port ' . $this->config[$server]['SERVE_PORT'] . ' already used');
+        $port = $this->config[$server]['SERVE_PORT'];
+        if ($this->isPortActive($port)) {
+            $this->exit('Port ' . $port . ' already used');
         }
         $cmd = $this->command($server, [], false);
         $cmd->addArg('serve')
-            ->addArg('--port', $this->config[$server]['SERVE_PORT']);
-        $cmd->execute();
-        return $cmd;
+            ->addArg('--port', $port);
+        $log = sys_get_temp_dir() . '/bwsync-serve-' . $server . '.log';
+        @file_put_contents($log, '');
+        @chmod($log, 0600);
+        //"exec" replaces the shell, so the process we stop later is bw itself
+        $proc = proc_open('exec ' . $cmd->getExecCommand(), [0 => ['file', '/dev/null', 'r'], 1 => ['file', $log, 'a'], 2 => ['file', $log, 'a']], $pipes, null, $cmd->procEnv);
+        if (!is_resource($proc)) {
+            $this->exit('Fail to start process ' . $server);
+        }
+        $this->procs[$server] = $proc;
+        $this->logs[$server] = $log;
+    }
+
+    //Stops the script when one of the bw serve processes has died
+    public function checkServers() {
+        foreach ($this->procs as $server => $proc) {
+            $status = proc_get_status($proc);
+            if ($status['running']) {
+                continue;
+            }
+            unset($this->procs[$server]);
+            $reason = $status['signaled'] ? 'killed by signal ' . $status['termsig'] : 'exit code ' . $status['exitcode'];
+            $tail = $this->logTail($this->logs[$server]);
+            $this->exit("Error: $server API server stopped ($reason)" . (strlen($tail) ? ': ' . $tail : ''));
+        }
+    }
+
+    public function stopServers() {
+        foreach ($this->procs as $proc) {
+            proc_terminate($proc);
+        }
+        $deadline = microtime(true) + 3;
+        while (microtime(true) < $deadline) {
+            $running = false;
+            foreach ($this->procs as $proc) {
+                $running = $running || proc_get_status($proc)['running'];
+            }
+            if (!$running) {
+                break;
+            }
+            usleep(100000);
+        }
+        foreach ($this->procs as $proc) {
+            if (proc_get_status($proc)['running']) {
+                proc_terminate($proc, 9);
+            }
+            proc_close($proc);
+        }
+        $this->procs = [];
+    }
+
+    private function logTail(string $file) {
+        $size = (int) @filesize($file);
+        $text = trim((string) @file_get_contents($file, false, null, max(0, $size - 500)));
+        return preg_replace('/\s+/', ' ', $text);
     }
 
     public function syncCli(string $server) {
@@ -109,8 +132,8 @@ class BWSync {
         if ($this->config[$server]['NODE_EXTRA_CA_CERTS']) {
             $env['NODE_EXTRA_CA_CERTS'] = $this->config[$server]['NODE_EXTRA_CA_CERTS'];
         }
-        if ($sessionId = $this->redis->get($server . '_SESSION')) {
-            $env['BW_SESSION'] = $sessionId;
+        if (isset($this->sessions[$server])) {
+            $env['BW_SESSION'] = $this->sessions[$server];
         }
         return $env;
     }
@@ -147,7 +170,7 @@ class BWSync {
         $this->run($unlock->addArg('unlock')->addArg('--passwordenv', 'MASTER_PASSWORD')->addArg('--raw'));
 
         if ($unlock->getExitCode() === 0) {
-            $this->redis->set($server . '_SESSION', $unlock->getOutput());
+            $this->sessions[$server] = $unlock->getOutput(); //kept in memory only
             return true;
         }
         $this->lastCliError = 'bw unlock: ' . $this->describe($unlock);
@@ -206,6 +229,7 @@ class BWSync {
         if ($notify) {
             $this->notification->send($errMsg);
         }
+        $this->stopServers();
         exit(1);
     }
 }

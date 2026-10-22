@@ -2,14 +2,25 @@
 require 'config.php';
 require 'vendor/autoload.php';
 
-foreach(glob(__DIR__ . "/lib/*.php") as $libFile) {
-    require $libFile;
-}
+require_once __DIR__ . '/lib/autoload.php';
 
 use BitwardenOrgSync\Helper;
 use BitwardenOrgSync\Logger;
 
-Logger::setLevel($config['LOG_LEVEL'] ?? 'info');
+$options = getopt('', ['once', 'dry-run', 'rebuild-mapping', 'verbose', 'help']);
+if (isset($options['help'])) {
+    echo "Usage: php run.php [options]\n"
+        . "  --once             run one synchronization cycle and exit\n"
+        . "  --dry-run          run one cycle and only report what would be changed\n"
+        . "  --rebuild-mapping  link the items that already exist on both servers (e.g. after a loss of Redis) and exit\n"
+        . "  --verbose          log everything (LOG_LEVEL debug)\n";
+    exit(0);
+}
+$dryRun = isset($options['dry-run']);
+$rebuild = isset($options['rebuild-mapping']);
+$once = isset($options['once']) || $dryRun || $rebuild;
+
+Logger::setLevel(isset($options['verbose']) ? 'debug' : ($config['LOG_LEVEL'] ?? 'info'));
 
 $notification = new \BitwardenOrgSync\Notification($config['NOTIFICAION'] ?? []);
 
@@ -34,10 +45,29 @@ $redis = Helper::redis($config);
 //Init API Servers
 $bwmanager = new \BitwardenOrgSync\BWSync($config);
 
+//whatever way the script ends, the bw serve processes must not stay behind
+register_shutdown_function(function () use ($bwmanager) {
+    $bwmanager->stopServers();
+});
+
+if (function_exists('pcntl_async_signals')) {
+    pcntl_async_signals(true);
+    $stop = function (int $signal) {
+        Logger::info("Signal $signal received, stopping");
+        exit(0);
+    };
+    pcntl_signal(SIGTERM, $stop);
+    pcntl_signal(SIGINT, $stop);
+}
+
 foreach (['BW_LOCAL', 'BW_REMOTE'] as $server) {
     if (empty($config[$server]['ORGANIZATION_ID'])) {
         $bwmanager->exit("Error: $server ORGANIZATION_ID is not set.");
     }
+}
+
+if (!$dryRun) {
+    $redis->del(['BW_LOCAL_SESSION', 'BW_REMOTE_SESSION']); //older versions kept the bw sessions in Redis in plain text
 }
 
 $bwVersion = $bwmanager->version();
@@ -46,6 +76,11 @@ Logger::info('BW_LOCAL: ' . $config['BW_LOCAL']['URL'] . ', organization ' . $co
 Logger::info('BW_REMOTE: ' . $config['BW_REMOTE']['URL'] . ', organization ' . $config['BW_REMOTE']['ORGANIZATION_ID']);
 if ($bwVersion && version_compare($bwVersion, '2024.6.0', '<')) {
     Logger::warning("bw $bwVersion is older than the required 2024.6.0");
+}
+if ($dryRun) {
+    Logger::info('Dry run: one cycle, nothing is changed');
+} elseif ($rebuild) {
+    Logger::info('Rebuild mode: the items that exist on both servers are linked, nothing is created');
 }
 
 $bwmanager->serveBackground('BW_LOCAL');
@@ -56,268 +91,9 @@ $httpTimeout = (int) ($config['HTTP_TIMEOUT'] ?? 120);
 $local = new \BitwardenOrgSync\ApiClient('http://[::1]:' . $config['BW_LOCAL']['SERVE_PORT'], 'BW_LOCAL', $httpTimeout);
 $remote = new \BitwardenOrgSync\ApiClient('http://[::1]:' . $config['BW_REMOTE']['SERVE_PORT'], 'BW_REMOTE', $httpTimeout);
 
-$stats = Helper::newStats();
+$syncer = new \BitwardenOrgSync\Syncer($redis, $local, $remote, $config, $dryRun);
 
-//Stops the script when one of the bw serve processes has died
-$checkChildren = function () use ($bwmanager) {
-    static $warned = false;
-    while (true) {
-        $pid = pcntl_waitpid(-1, $status, WNOHANG);
-        if ($pid > 0) {
-            $server = $bwmanager->serverByPid($pid);
-            //a child that exited with code 1 has already sent its own notification with the reason
-            $notify = !(pcntl_wifexited($status) && pcntl_wexitstatus($status) === 1);
-            $bwmanager->exit('Error: ' . ($server ? "$server API server process" : 'The process') . " with PID $pid is stopped (" . Helper::describeExit($status) . ').', $notify);
-        } elseif ($pid == 0) {
-            break;
-        } else {
-            if (!$warned) {
-                Logger::warning('pcntl_waitpid() failed, API server processes are not monitored.');
-                $warned = true;
-            }
-            break;
-        }
-    }
-};
-
-//One synchronization cycle: collections, then items in both directions
-$syncCycle = function () use ($config, $redis, $local, $remote, &$stats) {
-
-    Logger::debug('Local sync...');
-    $localSynced = $local->sync();
-    Logger::debug('Remote sync...');
-    $remoteSynced = $remote->sync();
-    if (!$localSynced || !$remoteSynced) {
-        $failed = array_keys(array_filter(['BW_LOCAL' => !$localSynced, 'BW_REMOTE' => !$remoteSynced]));
-        Logger::error('Sync failed on ' . implode(' and ', $failed) . ', the cycle is skipped to avoid working with stale data');
-        return;
-    }
-
-    //Sync Collections
-    Logger::debug('Sync Collections...');
-    foreach ($local->getOrgItems($config['BW_LOCAL']['ORGANIZATION_ID']) ?: [] as $lc) {
-        if (!$redis->get($lc['id'])) {
-            if ($rcc = $remote->createOrgCollection($config['BW_REMOTE']['ORGANIZATION_ID'], $lc['name'])) {
-                Helper::link($redis, $lc['id'], $rcc['id'], $rcc['id'], $lc['id']);
-                $stats['collections']['to_remote']++;
-            }
-        }
-    }
-
-    foreach ($remote->getOrgItems($config['BW_REMOTE']['ORGANIZATION_ID']) ?: [] as $rc) {
-        if (!$redis->get($rc['id'])) {
-            if ($lcc = $local->createOrgCollection($config['BW_LOCAL']['ORGANIZATION_ID'], $rc['name'])) {
-                Helper::link($redis, $rc['id'], $lcc['id'], $lcc['id'], $rc['id']);
-                $stats['collections']['to_local']++;
-            }
-        }
-    }
-
-
-    //Sync Items
-    Logger::debug('Sync Items...');
-    $localSkipped = [];
-    foreach ($local->getItems($config['BW_LOCAL']['ORGANIZATION_ID']) ?: [] as $litem) {
-
-        if (!strlen($litem['name'])) {
-            continue;
-        }
-
-        if (!Helper::isSyncable($litem)) {
-            Helper::countSkipped($localSkipped, $litem);
-            continue;
-        }
-
-        if (!$remoteItem = $redis->get($litem['id'])) {
-            $collectionIds = [];
-            foreach ($litem['collectionIds'] as $lcId) {
-                if ($rcId = $redis->get($lcId)) {
-                    $collectionIds[] = $rcId;
-                }
-            }
-            $fields = (isset($litem['fields'])) ? $litem['fields'] : [];
-            $remoteItemCreate = $remote->createItem(
-                $config['BW_REMOTE']['ORGANIZATION_ID'],
-                $litem['name'],
-                $collectionIds,
-                $litem['type'],
-                $litem['login'],
-                $litem['notes'],
-                $fields,
-                $litem['reprompt'] ?? 0
-            );
-            if ($remoteItemCreate) {
-                Helper::link(
-                    $redis,
-                    $litem['id'], ['linked_uuid' => $remoteItemCreate['id'], 'revisionDate' => $litem['revisionDate']],
-                    $remoteItemCreate['id'], ['linked_uuid' => $litem['id'], 'revisionDate' => $remoteItemCreate['revisionDate']]
-                );
-                $stats['to_remote']['created']++;
-            } else {
-                $stats['to_remote']['failed']++;
-            }
-            continue;
-        }
-
-        $localStoredItem = $redis->get($litem['id']);
-
-        if (strpos($litem['name'], '[DELETE]') !== false) {
-            if ($local->deleteItem($litem['id'])) {
-                $redis->del($litem['id']);
-                if ($remote->deleteItem($localStoredItem['linked_uuid'])) {
-                    $redis->del($localStoredItem['linked_uuid']);
-                    $stats['to_remote']['deleted']++;
-                } else {
-                    $stats['to_remote']['failed']++;
-                }
-            } else {
-                $stats['to_remote']['failed']++;
-            }
-            continue;
-        }
-
-        if ($litem['revisionDate'] != $localStoredItem['revisionDate']) {
-
-            $collectionIds = [];
-            foreach ($litem['collectionIds'] as $lcId) {
-                if ($rcId = $redis->get($lcId)) {
-                    $collectionIds[] = $redis->get($lcId);
-                }
-            }
-            $fields = (isset($litem['fields'])) ? $litem['fields'] : [];
-
-            $remoteItemUpdate = $remote->updateItem(
-                $localStoredItem['linked_uuid'],
-                $config['BW_REMOTE']['ORGANIZATION_ID'],
-                $litem['name'],
-                $collectionIds,
-                $litem['type'],
-                $litem['login'],
-                $litem['notes'],
-                $fields,
-                $litem['reprompt'] ?? 0
-            );
-
-            if ($remoteItemUpdate) {
-                Helper::link(
-                    $redis,
-                    $litem['id'], ['linked_uuid' => $remoteItemUpdate['id'], 'revisionDate' => $litem['revisionDate']],
-                    $remoteItemUpdate['id'], ['linked_uuid' => $litem['id'], 'revisionDate' => $remoteItemUpdate['revisionDate']]
-                );
-                $stats['to_remote']['updated']++;
-            } else {
-                $stats['to_remote']['failed']++;
-            }
-        }
-
-    }
-
-    $stats['to_remote']['skipped'] = array_sum($localSkipped);
-    Helper::reportSkipped('BW_LOCAL', $localSkipped);
-
-    $remoteSkipped = [];
-    foreach ($remote->getItems($config['BW_REMOTE']['ORGANIZATION_ID']) ?: [] as $ritem) {
-
-        if (!strlen($ritem['name'])) {
-            continue;
-        }
-
-        if (!Helper::isSyncable($ritem)) {
-            Helper::countSkipped($remoteSkipped, $ritem);
-            continue;
-        }
-
-        if (!$localItem = $redis->get($ritem['id'])) {
-            $collectionIds = [];
-            foreach ($ritem['collectionIds'] as $rcId) {
-                if ($lcId = $redis->get($rcId)) {
-                    $collectionIds[] = $lcId;
-                }
-            }
-            $fields = (isset($ritem['fields'])) ? $ritem['fields'] : [];
-
-            $localItemCreate = $local->createItem(
-                $config['BW_LOCAL']['ORGANIZATION_ID'],
-                $ritem['name'],
-                $collectionIds,
-                $ritem['type'],
-                $ritem['login'],
-                $ritem['notes'],
-                $fields,
-                $ritem['reprompt'] ?? 0
-            );
-            if ($localItemCreate) {
-                Helper::link(
-                    $redis,
-                    $ritem['id'], ['linked_uuid' => $localItemCreate['id'], 'revisionDate' => $ritem['revisionDate']],
-                    $localItemCreate['id'], ['linked_uuid' => $ritem['id'], 'revisionDate' => $localItemCreate['revisionDate']]
-                );
-                $stats['to_local']['created']++;
-            } else {
-                $stats['to_local']['failed']++;
-            }
-            continue;
-        }
-
-        $remoteStoredItem = $redis->get($ritem['id']);
-
-        if (strpos($ritem['name'], '[DELETE]') !== false) {
-            if ($remote->deleteItem($ritem['id'])) {
-                $redis->del($ritem['id']);
-                if ($local->deleteItem($remoteStoredItem['linked_uuid'])) {
-                    $redis->del($remoteStoredItem['linked_uuid']);
-                    $stats['to_local']['deleted']++;
-                } else {
-                    $stats['to_local']['failed']++;
-                }
-            } else {
-                $stats['to_local']['failed']++;
-            }
-            continue;
-        }
-
-
-        if ($ritem['revisionDate'] != $remoteStoredItem['revisionDate']) {
-
-            $collectionIds = [];
-            foreach ($ritem['collectionIds'] as $rcId) {
-                if ($lcId = $redis->get($rcId)) {
-                    $collectionIds[] = $lcId;
-                }
-            }
-
-            $fields = (isset($ritem['fields'])) ? $ritem['fields'] : [];
-
-            $localItemUpdate = $local->updateItem(
-                $remoteStoredItem['linked_uuid'],
-                $config['BW_LOCAL']['ORGANIZATION_ID'],
-                $ritem['name'],
-                $collectionIds,
-                $ritem['type'],
-                $ritem['login'],
-                $ritem['notes'],
-                $fields,
-                $ritem['reprompt'] ?? 0
-            );
-
-            if ($localItemUpdate) {
-                Helper::link(
-                    $redis,
-                    $ritem['id'], ['linked_uuid' => $localItemUpdate['id'], 'revisionDate' => $ritem['revisionDate']],
-                    $localItemUpdate['id'], ['linked_uuid' => $ritem['id'], 'revisionDate' => $localItemUpdate['revisionDate']]
-                );
-                $stats['to_local']['updated']++;
-            } else {
-                $stats['to_local']['failed']++;
-            }
-        }
-
-    }
-
-    $stats['to_local']['skipped'] = array_sum($remoteSkipped);
-    Helper::reportSkipped('BW_REMOTE', $remoteSkipped);
-};
-
+$healthFile = $config['HEALTH_FILE'] ?? sys_get_temp_dir() . '/bwsync-health';
 $cycle = 0;
 $failedCycles = 0;
 $lockedCycles = 0;
@@ -335,7 +111,7 @@ while (true) {
 
     try {
 
-        $checkChildren();
+        $bwmanager->checkServers();
 
         $localCounter = 0;
         $remoteCounter = 0;
@@ -349,7 +125,7 @@ while (true) {
             }
             $localCounter++;
             sleep(1);
-            $checkChildren();
+            $bwmanager->checkServers();
         }
 
         while (($remote->status() === false)) {
@@ -361,7 +137,7 @@ while (true) {
             }
             $remoteCounter++;
             sleep(1);
-            $checkChildren();
+            $bwmanager->checkServers();
         }
 
         foreach (['BW_LOCAL' => $local, 'BW_REMOTE' => $remote] as $name => $api) {
@@ -373,7 +149,16 @@ while (true) {
         }
 
         if (!count($locked)) {
-            $syncCycle();
+            Logger::debug('Local sync...');
+            $localSynced = $local->sync();
+            Logger::debug('Remote sync...');
+            $remoteSynced = $remote->sync();
+            if ($localSynced && $remoteSynced) {
+                $stats = $rebuild ? $syncer->rebuildMapping() : $syncer->run();
+            } else {
+                $failed = array_keys(array_filter(['BW_LOCAL' => !$localSynced, 'BW_REMOTE' => !$remoteSynced]));
+                Logger::error('Sync failed on ' . implode(' and ', $failed) . ', the cycle is skipped to avoid working with stale data');
+            }
         }
 
     } catch (\Throwable $e) {
@@ -382,12 +167,21 @@ while (true) {
         Logger::debug($e->getTraceAsString());
     }
 
-    $errors = $local->getErrorCount() + $remote->getErrorCount() + count($locked) + (strlen($exception) ? 1 : 0);
-    $summary = Helper::summary($cycle, $stats, microtime(true) - $started, $errors);
-    if ($errors) {
-        Logger::warning($summary);
-    } else {
-        Logger::info($summary);
+    $errors = $local->getErrorCount() + $remote->getErrorCount() + $stats['errors'] + count($locked) + (strlen($exception) ? 1 : 0);
+    if (!$rebuild) {
+        $summary = Helper::summary($cycle, $stats, microtime(true) - $started, $errors);
+        if ($errors) {
+            Logger::warning($summary);
+        } else {
+            Logger::info($summary);
+        }
+    }
+
+    if ($once) {
+        if ($dryRun) {
+            Logger::info('Dry run finished, nothing was changed');
+        }
+        exit($errors ? 1 : 0);
     }
 
     $failedCycles = $errors ? $failedCycles + 1 : 0;
@@ -400,7 +194,7 @@ while (true) {
 
     $alertAfter = (int) ($config['FAIL_ALERT_CYCLES'] ?? 3);
     if ($alertAfter > 0 && $failedCycles >= $alertAfter && !$alerted) {
-        $lastError = current(array_filter([$exception, $local->getLastError(), $remote->getLastError(), count($locked) ? implode(' and ', $locked) . ' vault is not unlocked' : '']));
+        $lastError = current(array_filter([$exception, $local->getLastError(), $remote->getLastError(), $stats['aborted'], count($locked) ? implode(' and ', $locked) . ' vault is not unlocked' : '']));
         //not marked as sent when the notification failed, so it is tried again in the next cycle
         $alerted = $notification->send("Synchronization has failed in $failedCycles cycles in a row. Last error: $lastError");
     } elseif (!$errors && $alerted) {
@@ -408,6 +202,13 @@ while (true) {
         $alerted = false;
     }
 
+    if (!$errors) {
+        @file_put_contents($healthFile, time() . ' ' . (3 * (int) $config['SYNC_INTERVAL'] + 120)); //read by the docker healthcheck
+    }
+
     Logger::debug('Sleep for ' . $config['SYNC_INTERVAL'] . ' sec.');
-    sleep($config['SYNC_INTERVAL']);
+    for ($i = 0; $i < (int) $config['SYNC_INTERVAL']; $i++) {
+        sleep(1);
+        $bwmanager->checkServers();
+    }
 }

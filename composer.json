@@ -1,5 +1,8 @@
 {
     "require": {
         "mikehaertl/php-shellcommand": "^1.7"
+    },
+    "scripts": {
+        "test": "php tests/run.php"
     }
 }

@@ -1,0 +1,13 @@
+.git
+.gitignore
+.dockerignore
+.DS_Store
+.bwlocal
+.bwremote
+vendor
+tests
+config.php
+docker/config.php
+docker/redis_data
+*.pem
+*.crt

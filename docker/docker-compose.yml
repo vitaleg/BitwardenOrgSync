@@ -2,12 +2,22 @@ version: '3.8'
 
 services:
   app:
-    build: 
-      context: .
-      dockerfile: Dockerfile
+    # the image is built from this repository (the build context is its root), not from a copy downloaded from GitHub
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+#      args:
+#        BW_VERSION: "2025.1.0"
+#        BW_SHA256: "<sha256 of bw-linux-2025.1.0.zip>"
     container_name: BitwardenOrgSync
     restart: always
+    init: true
     command: php /var/www/BitwardenOrgSync/run.php
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
       - bwlocal:/bwlocal
       - bwremote:/bwremote
@@ -17,11 +27,17 @@ services:
       - redis
 
   redis:
-    image: redis:latest
+    # set REDIS_TAG (e.g. in a .env file) to the major version your data was written by, to avoid surprises with "latest"
+    image: redis:${REDIS_TAG:-latest}
     container_name: redis-server
     restart: always
     # the references between the servers must survive a crash: snapshot every minute if anything changed
     command: redis-server --save 60 1
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
       - ./redis_data:/data
 
