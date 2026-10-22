@@ -76,6 +76,49 @@ test('copies a change in either direction and then stays quiet', function () {
     assertSame(0, $stats['to_remote']['updated'] + $stats['to_local']['updated']);
 });
 
+test('items without the optional properties are copied in both directions (bw leaves out what is empty)', function () {
+    [$syncer, $redis, $local, $remote] = env();
+    $c = $local->addCollection('org-l', 'Team');
+    $x = $local->addItem('org-l', 'X', [$c]);
+    $local->omit($x, 'notes', 'fields', 'reprompt');
+
+    $stats = $syncer->run();
+    assertSame(1, $stats['to_remote']['created']);
+    assertSame(0, $stats['errors']);
+    $x2 = $remote->find('org-r', 'X')['id'];
+    assertSame(null, $remote->item($x2)['notes']);
+
+    $writes = [$local->writes, $remote->writes, $redis->writes];
+    $remote->omit($x2, 'notes', 'fields', 'reprompt');
+    $syncer->run();
+    assertSame($writes, [$local->writes, $remote->writes, $redis->writes], 'a missing property is the same as an empty one');
+
+    $local->edit($x, ['login' => ['password' => 'from-local']]);
+    $local->omit($x, 'notes', 'fields', 'reprompt');
+    $stats = $syncer->run();
+    assertSame(1, $stats['to_remote']['updated']);
+    assertSame('from-local', $remote->item($x2)['login']['password']);
+
+    $remote->edit($x2, ['login' => ['password' => 'from-remote']]);
+    $remote->omit($x2, 'notes', 'fields', 'reprompt');
+    $stats = $syncer->run();
+    assertSame(1, $stats['to_local']['updated']);
+    assertSame('from-remote', $local->item($x)['login']['password']);
+});
+
+test('a conflict copy of an item without the optional properties is created', function () {
+    [$syncer, $redis, $local, $remote, $c, $x, $x2] = synced();
+    $local->edit($x, ['login' => ['password' => 'LOCAL']]);
+    $remote->edit($x2, ['login' => ['password' => 'REMOTE']]);
+    $local->omit($x, 'notes', 'fields', 'reprompt');
+    $remote->omit($x2, 'notes', 'fields', 'reprompt');
+
+    $stats = $syncer->run();
+    assertSame(1, $stats['conflicts']);
+    assertSame(0, $stats['errors']);
+    assertSame(1, count(itemsLike($local, 'org-l', 'X (conflict copy')));
+});
+
 test('items with unsupported types and without a name are skipped', function () {
     [$syncer, $redis, $local, $remote] = env();
     $c = $local->addCollection('org-l', 'Team');

@@ -2,6 +2,14 @@
 // Loads the library and the test helpers. No Redis, no bw and no network are needed.
 error_reporting(E_ALL);
 
+//A warning (for example an undefined array key) is a bug: it must fail the test and not only print a line
+set_error_handler(function (int $severity, string $message, string $file, int $line) {
+    if (!(error_reporting() & $severity)) {
+        return false;
+    }
+    throw new \ErrorException($message, 0, $severity, $file, $line);
+});
+
 if (!class_exists('RedisException')) {
     class RedisException extends \Exception {}
 }

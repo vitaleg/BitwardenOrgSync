@@ -635,7 +635,7 @@ class Syncer {
             Logger::info("[dry-run] would create item '$name' in {$side['name']}");
             return ['id' => 'dry-run', 'revisionDate' => ''];
         }
-        return $side['api']->createItem($side['org'], $name, $collectionIds, $item['type'], $item['login'], $item['notes'], $item['fields'] ?? [], $item['reprompt'] ?? 0);
+        return $side['api']->createItem($side['org'], $name, $collectionIds, $item['type'], $item['login'], $item['notes'] ?? null, $item['fields'] ?? [], $item['reprompt'] ?? 0);
     }
 
     private function apiUpdate(string $to, array $dst, array $src, array $collectionIds) {
@@ -644,7 +644,7 @@ class Syncer {
             Logger::info("[dry-run] would update item {$dst['id']} ('{$src['name']}') in {$side['name']}");
             return ['id' => $dst['id'], 'revisionDate' => $dst['revisionDate']];
         }
-        return $side['api']->updateItem($dst['id'], $side['org'], $src['name'], $collectionIds, $src['type'], $src['login'], $src['notes'], $src['fields'] ?? [], $src['reprompt'] ?? 0);
+        return $side['api']->updateItem($dst['id'], $side['org'], $src['name'], $collectionIds, $src['type'], $src['login'], $src['notes'] ?? null, $src['fields'] ?? [], $src['reprompt'] ?? 0);
     }
 
     private function apiDelete(string $key, array $item) {

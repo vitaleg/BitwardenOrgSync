@@ -137,6 +137,13 @@ class FakeApi implements \BitwardenOrgSync\ApiInterface {
         $this->items[$id]['revisionDate'] = self::now();
     }
 
+    //like the bw CLI, which leaves out the properties that are empty
+    public function omit(string $id, string ...$keys) {
+        foreach ($keys as $key) {
+            unset($this->items[$id][$key]);
+        }
+    }
+
     //like the web vault: the revision date of the item is not changed
     public function moveToCollections(string $id, array $collectionIds) {
         $this->items[$id]['collectionIds'] = array_values($collectionIds);
